@@ -184,6 +184,8 @@ if __name__ == '__main__':
                         help="output destination.")
     parser.add_argument('--spp', type=int,
                         help="number of samples to use as input.")
+    parser.add_argument('--sbmc', action="store_true", default=False,
+                        help="number of samples to use as input.")
     parser.add_argument("--tile_size", default=1024, help="We process in tiles"
                         " to limit GPU memory usage. This is the tile size.")
     parser.add_argument("--tile_pad", default=256, help="We process in tiles"

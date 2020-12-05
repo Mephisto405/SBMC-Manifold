@@ -51,11 +51,12 @@ class Multisteps(nn.Module):
             Algorithm 1 in the paper)
         pixel(bool): if True, collapses samples by averaging and treat the
             resulting image as a 1spp input. Useful for ablation.
+        pdf(bool): if True, global features are not considered.
     """
 
-    def __init__(self, n_features, n_global_features, width=128,
+    def __init__(self, n_features, width=128,
                  embedding_width=128, ksize=21, splat=True, nsteps=3,
-                 pixel=False):
+                 pixel=False, pdr=False, crop=True):
         super(Multisteps, self).__init__()
 
         if ksize < 3 or (ksize % 2 == 0):
@@ -72,13 +73,16 @@ class Multisteps(nn.Module):
         self.pixel = pixel
         self.width = width
         self.embedding_width = embedding_width
+        self.pdr = pdr
+        self.crop = crop
+        self.n_features = n_features
         self.eps = 1e-8  # for kernel normalization
 
         # We repeat the pixel/sample alternate processing for `nsteps` steps.
         self.nsteps = nsteps
         for step in range(self.nsteps):
             if step == 0:
-                n_in = n_features + n_global_features
+                n_in = n_features
             else:
                 n_in = self.embedding_width + width
 
@@ -104,6 +108,10 @@ class Multisteps(nn.Module):
         # This module aggregates the sample contributions
         self.kernel_update = ops.ProgressiveKernelApply(splat=self.splat)
 
+    def __str__(self):
+        return "SampleKSN f{}w{}e{}k{}s{}".format(self.n_features, self.width, self.embedding_width, self.ksize, self.nsteps)
+
+
     def forward(self, samples):
         """Forward pass of the model.
 
@@ -117,9 +125,14 @@ class Multisteps(nn.Module):
             (dict) with keys:
                 "radiance": (th.Tensor[bs, 3, h, w]) denoised radiance
         """
-        radiance = samples["radiance"]
-        features = samples["features"]
-        gfeatures = samples["global_features"].to(radiance.device)
+        if self.pdr:
+            # samples: (th.Tensor[bs, nf, spp, h, w])
+            #samples = samples.permute(0, 2, 1, 3, 4) # th.Tensor[bs, spp, nf, h, w]
+            radiance = samples[:,:,0:3,:,:]
+            features = samples
+        else:
+            radiance = samples["radiance"]
+            features = samples["features"]
 
         if self.pixel:
             # Make the pixel-average look like one sample
@@ -130,14 +143,11 @@ class Multisteps(nn.Module):
 
         modules = {n: m for (n, m) in self.named_modules()}
 
-        limit_memory_usage = not self.training
+        limit_memory_usage = False
 
         # -- Embed the samples then collapse to pixel-wise summaries ----------
         if limit_memory_usage:
-            gf = gfeatures.repeat([1, 1, h, w])
             new_features = th.zeros(bs, spp, self.embedding_width, h, w)
-        else:
-            gf = gfeatures.repeat([spp, 1, h, w])
 
         for step in range(self.nsteps):
             if limit_memory_usage:
@@ -145,9 +155,7 @@ class Multisteps(nn.Module):
                 # large images
                 for sp in range(spp):
                     f = features[:, sp].to(radiance.device)
-                    if step == 0:  # Global features at first iteration only
-                        f = th.cat([f, gf], 1)
-                    else:
+                    if step != 0:  # Global features at first iteration only
                         f = th.cat([f, propagated], 1)
 
                     f = modules["embedding_{:02d}".format(step)](f)
@@ -168,10 +176,8 @@ class Multisteps(nn.Module):
                 if th.cuda.is_available():
                     th.cuda.empty_cache()
             else:
-                flat = features.view([bs*spp, nf, h, w])
-                if step == 0:  # Global features at first iteration only
-                    flat = th.cat([flat, gf], 1)
-                else:
+                flat = features.contiguous().view([bs*spp, nf, h, w]).to(radiance.device)
+                if step != 0:  # Global features at first iteration only
                     flat = th.cat([flat, propagated.unsqueeze(1).repeat(
                         [1, spp, 1, 1, 1]).view(spp*bs, self.width, h, w)], 1)
                 flat = modules["embedding_{:02d}".format(step)](flat)
@@ -210,12 +216,15 @@ class Multisteps(nn.Module):
 
         # Normalize output with the running sum
         output = sum_r / (sum_w + self.eps)
+        if self.pdr:
+            return output
 
-        # Remove the invalid boundary data
-        crop = (self.ksize - 1) // 2
-        output = output[..., crop:-crop, crop:-crop]
+        if self.crop:
+            # Remove the invalid boundary data
+            crop = (self.ksize - 1) // 2
+            output = output[..., crop:-crop, crop:-crop]
 
-        return {"radiance": output}
+        return output
 
 
 class KPCN(nn.Module):
@@ -289,3 +298,13 @@ class KPCN(nn.Module):
                       specular=r_specular)
 
         return output
+
+
+if __name__ == "__main__":
+    import torch.nn as nn
+
+    model = Multisteps(54, 0, pdr=True)
+    model = nn.DataParallel(model, output_device=1).cuda()
+    out = model(torch.rand((24, 128, 128, 4, 54)).permute(0, 4, 3, 1, 2).cuda())
+    print(out)
+    print(out.shape)
