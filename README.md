@@ -87,25 +87,7 @@ and run it:
 
 ## Docker-less installation and dependencies
 
-If you just intend to install our library, you can run:
-
-```shell
-HALIDE_DISTRIB_DIR=<path/to/Halide> python setup.py install
-```
-
-from the root of this repo. In any cases the docker file in `dockerfiles`
-should help you configure your runtime environment.
-
-We build on the following dependencies:
-
-- Halide: our splatting kernel operator is implemented in Halide
-<https://halide-lang.org/>. The `setup.py` script looks for the path to the Halide
-distribution root under the environment variable `HALIDE_DISTRIB_DIR`. If this variable
-is not defined, the script will prompt you whether to download the Halide
-locally.
-- Torch-Tools: we use the `ttools` library for PyTorch helpers and our training
-and evaluation scripts <https://github.com/mgharbi/ttools>. This should get installed
-automatically when running `python setup.py install`.
+For docker-less installation, please follow the [instructions here](dockerless_install.md)
 
 
 ## Demo
